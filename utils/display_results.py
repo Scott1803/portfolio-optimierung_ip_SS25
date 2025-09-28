@@ -15,100 +15,124 @@ except Exception:  # pragma: no cover
     from eia import calculate_economic_impact as eia_calc_impact
 
 
-def _call_eia_calc(x: np.ndarray, ia_input) -> np.ndarray:
-    """
-    Call EIA 'calculate_economic_impact' and return the (2, I) result.
-    Supports either signature: (x) or (x, ia_input).
-    """
-    return eia_calc_impact(x, ia_input)  # type: ignore[arg-type]
+def _print_line(char: str = "=", width: int = 100) -> None:
+    print(char * width)
 
 
-def show_table_for_results(
-    economic_result: np.ndarray,
-    social_result: np.ndarray,
+def _fmt_bool_mark(cond: bool) -> str:
+    return "✅" if cond else "❌"
+
+
+def show_sia_table(
     *,
+    social_result: np.ndarray,
     si_input,
-    ia_input,
 ) -> None:
     """
-    Joint table with *consistent units*:
+    Print a table for the Social Impact Analysis only.
 
-    - Budget shown = x_IA + x_SIA per project
-    - Economic Impact (M€) = IA_economic_impact + EIA(x_SIA)_economic_impact
-    - Social Impact (%)    = 100*(φ(x_SIA) + φ(x_IA))  [both φ come from SIA model]
+    Columns:
+      Project | Funded | Budget (M€) | Social Impact (%)
 
     Notes
     -----
-    - We do NOT use social_result[1] because that’s a weighted score (proj_coef*φ).
-      We recompute φ (%) for both portfolios so units match.
+    - The input `social_result` is a (2, I) array where:
+        row0 = chosen investments x (M€)
+        row1 = weighted score (ignored here)
+    - We recompute φ(x) with the SIA model to get comparable % values:
+        φ%(x) = 100 * φ(x)
     """
-    if economic_result.shape != social_result.shape:
-        raise ValueError("Economic and social results must have the same shape")
-    if economic_result.ndim != 2 or economic_result.shape[0] != 2:
-        raise ValueError("Results must be shaped (2, I)")
+    if social_result.ndim != 2 or social_result.shape[0] != 2:
+        raise ValueError("social_result must be shaped (2, I)")
 
-    I = economic_result.shape[1]
-
-    # Extract investments and IA's own economic impact
-    x_ia = np.asarray(economic_result[0, :], dtype=float)
-    econ_base = np.asarray(economic_result[1, :], dtype=float)  # M€
-
-    # Extract SIA investments (ignore social_result[1] because it’s weighted, not %)
     x_sia = np.asarray(social_result[0, :], dtype=float)
+    I = x_sia.size
 
-    # --- Cross impacts in consistent units ---
+    # Recompute φ% using the SIA model (ignore weighted row in social_result)
+    # We avoid strict budget enforcement here since the optimizer already respected it.
+    sia_eval = sia_calc_portfolio(x_sia, si_input, total_budget=None, enforce_budget=False)
+    phi_percent = 100.0 * np.asarray(sia_eval[1, :], dtype=float)
 
-    # Social from BOTH portfolios, using SIA φ (0..1) → %:
-    # φ_SIA_from_SIA:
-    sia_from_sia = sia_calc_portfolio(x_sia, si_input, total_budget=None, enforce_budget=False)
-    soc_from_sia_percent = 100.0 * np.asarray(sia_from_sia[1, :], dtype=float)
-
-    # φ_SIA_from_IA:
-    sia_from_ia = sia_calc_portfolio(x_ia, si_input, total_budget=None, enforce_budget=False)
-    soc_from_ia_percent = 100.0 * np.asarray(sia_from_ia[1, :], dtype=float)
-
-    # Economic from SIA portfolio, using EIA:
-    eia_on_sia = _call_eia_calc(x_sia, ia_input)
-    econ_from_sia = np.asarray(eia_on_sia[1, :], dtype=float)  # M€
-
-    # Combined per-project impacts
-    econ_total = econ_base + econ_from_sia                    # M€
-    soc_total_percent = soc_from_sia_percent + soc_from_ia_percent  # %
-
-    # Combined budgets
-    budgets = x_ia + x_sia
-
-    # ---- Printing ----
-    print("=" * 100)
-    print("JOINT OPTIMIZATION RESULT")
-    print("=" * 100)
-    print(f"{'Project':<10} {'Funded':<8} {'Budget (M€)':<14} {'Economic Impact':<20} {'Social Impact (%)':<20}")
-    print("-" * 100)
+    _print_line("=")
+    print("SOCIAL IMPACT ANALYSIS")
+    _print_line("=")
+    print(f"{'Project':<10} {'Funded':<8} {'Budget (M€)':<14} {'Social Impact (%)':<20}")
+    _print_line("-")
 
     total_budget = 0.0
-    total_economic = 0.0
     total_social = 0.0
+    eps = 1e-9
 
     for i in range(I):
+        funded = x_sia[i] > eps
         pid = f"P{i+1}"
-        funded = budgets[i] > 1e-9
-        funded_mark = "✅" if funded else "❌"
-        budget_str = f"{budgets[i]:<14.3f}" if funded else f"{0:<14.3f}"
-        econ_str = f"{econ_total[i]:<20.6f}" if funded else f"{'-':<20}"
-        soc_str = f"{soc_total_percent[i]:<20.2f}" if funded else f"{'-':<20}"
-
-        print(f"{pid:<10} {funded_mark:<8} {budget_str} {econ_str} {soc_str}")
+        funded_mark = _fmt_bool_mark(funded)
+        budget_str = f"{x_sia[i]:<14.3f}" if funded else f"{0:<14.3f}"
+        social_str = f"{phi_percent[i]:<20.2f}" if funded else f"{'-':<20}"
+        print(f"{pid:<10} {funded_mark:<8} {budget_str} {social_str}")
 
         if funded:
-            total_budget += budgets[i]
-            total_economic += econ_total[i]
-            total_social += soc_total_percent[i]
+            total_budget += x_sia[i]
+            total_social += phi_percent[i]
 
-    print("=" * 100)
+    _print_line("=")
     print(
         f"{'SUM':<10} {'':<8} "
         f"{total_budget:<14.3f} "
-        f"{total_economic:<20.6f} "
         f"{total_social:<20.2f}"
     )
-    print("=" * 100)
+    _print_line("=")
+
+
+def show_eia_table(
+    *,
+    economic_result: np.ndarray,
+) -> None:
+    """
+    Print a table for the Economic Impact Analysis only.
+
+    Columns:
+      Project | Funded | Budget (M€) | Economic Impact (M€)
+
+    Notes
+    -----
+    - The input `economic_result` is a (2, I) array where:
+        row0 = chosen investments x (M€)
+        row1 = economic impact per project in M€
+    """
+    if economic_result.ndim != 2 or economic_result.shape[0] != 2:
+        raise ValueError("economic_result must be shaped (2, I)")
+
+    x_ia = np.asarray(economic_result[0, :], dtype=float)
+    econ = np.asarray(economic_result[1, :], dtype=float)
+    I = x_ia.size
+
+    _print_line("=")
+    print("ECONOMIC IMPACT ANALYSIS")
+    _print_line("=")
+    print(f"{'Project':<10} {'Funded':<8} {'Budget (M€)':<14} {'Economic Impact (M€)':<22}")
+    _print_line("-")
+
+    total_budget = 0.0
+    total_economic = 0.0
+    eps = 1e-9
+
+    for i in range(I):
+        funded = x_ia[i] > eps
+        pid = f"P{i+1}"
+        funded_mark = _fmt_bool_mark(funded)
+        budget_str = f"{x_ia[i]:<14.3f}" if funded else f"{0:<14.3f}"
+        econ_str = f"{econ[i]:<22.6f}" if funded else f"{'-':<22}"
+        print(f"{pid:<10} {funded_mark:<8} {budget_str} {econ_str}")
+
+        if funded:
+            total_budget += x_ia[i]
+            total_economic += econ[i]
+
+    _print_line("=")
+    print(
+        f"{'SUM':<10} {'':<8} "
+        f"{total_budget:<14.3f} "
+        f"{total_economic:<22.6f}"
+    )
+    _print_line("=")
