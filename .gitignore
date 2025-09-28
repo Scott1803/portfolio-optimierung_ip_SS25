@@ -25,12 +25,6 @@ build/
 .DS_Store
 Thumbs.db
 
-# --- Project data ---
-# Excel/CSV/analysis input files (not versioned, replace with paths if needed)
-*.xlsx
-*.xls
-*.csv
-
 # --- Logs & outputs ---
 *.log
 *.out

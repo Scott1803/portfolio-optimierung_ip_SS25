@@ -8,7 +8,7 @@ Teil des ["Interdisziplinären Projekts"](https://www.tucan.tu-darmstadt.de/scri
 
 # App Ausführen
 
-1. `laender.csv`, `projekte-ia.csv` und `projekte-sia.csv` Dateien (siehe Beispiele) in `/data` speichern
+1. Sicherstellen, dass Projektdaten (in richtigem Format) in `/data/auswertung_input.xlsx` liegen
 2. [Python] systemweit installieren, system dann neustarten (https://www.python.org/downloads/)
 3. Virtuelle Pythonumgebung erstellen und aktivieren `python -m venv .venv && source .venv/bin/activate` (macos / linux) oder `python -m venv .venv; .\.venv\Scripts\Activate.ps1` (windows powershell)
 4. python dependencies installieren `pip install -r requirements.txt
