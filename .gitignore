@@ -1,0 +1,40 @@
+# --- Python ---
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pkl
+
+# --- Virtual environments ---
+.venv/
+env/
+venv/
+
+# --- Build & packaging ---
+*.egg-info/
+dist/
+build/
+
+# --- IDE / Editor ---
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# --- OS-specific ---
+.DS_Store
+Thumbs.db
+
+# --- Project data ---
+# Excel/CSV/analysis input files (not versioned, replace with paths if needed)
+*.xlsx
+*.xls
+*.csv
+
+# --- Logs & outputs ---
+*.log
+*.out
+*.tmp
+
+# --- Jupyter (if used) ---
+.ipynb_checkpoints/
