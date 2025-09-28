@@ -55,10 +55,6 @@ To start, enter the total budget to invest
 
 
 def parse_budget(s: str) -> float:
-    """
-    Accepts integer/float with comma or dot decimal separator.
-    Raises ValueError on invalid.
-    """
     s = s.strip().replace(",", ".")
     if not re.fullmatch(r"[+-]?(\d+(\.\d+)?|\.\d+)", s):
         raise ValueError("Budget must be a number (e.g., 25, 25.0, 12,5).")
@@ -66,10 +62,6 @@ def parse_budget(s: str) -> float:
 
 
 def parse_split(s: str) -> tuple[int, int]:
-    """
-    Expects 'A/B' where A, B are whole numbers that sum to 100.
-    Returns (sia_pct, ia_pct).
-    """
     s = s.strip()
     if not re.fullmatch(r"\s*\d+\s*/\s*\d+\s*", s):
         raise ValueError("Split must be two whole numbers with a slash, e.g., 40/60.")
@@ -82,33 +74,47 @@ def parse_split(s: str) -> tuple[int, int]:
 
 
 def _attach_dependency_matrix(si_input, ia_input) -> np.ndarray | None:
-    """
-    Pull dependency matrix from IA input and attach to SIA input so the SIA code can consume it.
-    Validates shape and (optionally) that it has at least one non-zero dependency.
-    """
+    """Attach IA dependency matrix to SIA input so SIA model can enforce deps."""
     dep_mat = getattr(ia_input, "ia_projekt_abhaengigkeiten", None)
     if dep_mat is None:
-        # Try alternative name used in some sheets
         dep_mat = getattr(ia_input, "sia_projekt_abhaengigkeiten", None)
-
     if dep_mat is None:
-        # Nothing to attach — SIA will behave without deps
         return None
 
     M = np.asarray(dep_mat, dtype=float)
     if M.ndim != 2 or M.shape[0] != M.shape[1]:
         raise ValueError(
-            f"Dependency matrix must be square; got shape {M.shape}. "
-            "Expected I×I with rows = prerequisites, cols = dependents."
+            f"Dependency matrix must be square; got shape {M.shape} (rows=prereqs, cols=dependents)."
         )
-
-    # Zero diagonal and binarize, just to be safe
     M = (M >= 0.5).astype(float)
     np.fill_diagonal(M, 0.0)
-
-    # Attach onto the SIA input so run_optimization() and process_optimization_result() can pick it up
     setattr(si_input, "ia_projekt_abhaengigkeiten", M)
     return M
+
+
+def _validate_combined_minmax(x_combined: np.ndarray, ia_input) -> None:
+    """Ensure each project is either 0 or within [min_i, max_i]."""
+    mins = np.asarray(ia_input.projects_budget_min_max[0, :], dtype=float)
+    maxs = np.asarray(ia_input.projects_budget_min_max[1, :], dtype=float)
+    tol = 1e-9
+
+    if x_combined.shape != mins.shape:
+        raise ValueError(f"Combined vector length {x_combined.size} does not match project count {mins.size}.")
+
+    active = x_combined > tol
+    low_viol = active & (x_combined < mins - tol)
+    high_viol = active & (x_combined > maxs + tol)
+
+    if np.any(low_viol) or np.any(high_viol):
+        bad = np.where(low_viol | high_viol)[0]
+        msgs = [f"P{i+1}: {x_combined[i]:.3f} (min {mins[i]:.3f}, max {maxs[i]:.3f})" for i in bad]
+        raise ValueError("Combined investment violates per-project limits:\n  " + "\n  ".join(msgs))
+
+
+def _validate_portfolio_sum(x: np.ndarray, expected_sum: float, label: str, tol: float = 1e-6) -> None:
+    s = float(np.sum(x))
+    if abs(s - expected_sum) > tol:
+        raise ValueError(f"{label} portfolio sums to {s:.6f} ≠ expected {expected_sum:.6f} (|Δ|>{tol}).")
 
 
 def main() -> None:
@@ -163,7 +169,7 @@ def main() -> None:
 
     # -------- Wire dependency matrix from IA → SIA --------
     try:
-        dep_mat = _attach_dependency_matrix(si_input, ia_input)
+        _attach_dependency_matrix(si_input, ia_input)
     except Exception as e:
         print(f"Dependency matrix error: {e}")
         sys.exit(1)
@@ -171,16 +177,8 @@ def main() -> None:
     # -------- Run SIA --------
     try:
         sia_res = run_sia_optimization(si_input, total_budget=sia_budget)
-        # Pass matrix to post-processor too (process_optimization_result supports it)
-        if dep_mat is not None:
-            sia_out = process_sia_result(
-                sia_res, si_input, total_budget=sia_budget, dependency_matrix=dep_mat
-            )
-        else:
-            sia_out = process_sia_result(sia_res, si_input, total_budget=sia_budget)
-        # Convert to % **only if** your display expects normalized share; if your SIA
-        # returns weighted impact already, comment the next line.
-        # sia_out[1, :] *= 100.0
+        sia_out = process_sia_result(sia_res, si_input, total_budget=sia_budget)
+        # sia_out[0,:] = investments; we IGNORE sia_out[1,:] (weighted), recompute φ in display
     except Exception as e:
         print(f"SIA optimization failed: {e}")
         sys.exit(1)
@@ -188,8 +186,27 @@ def main() -> None:
     # -------- Run IA --------
     try:
         ia_out = run_ia_optimization(ia_input, total_budget=ia_budget)  # (2, I)
+        # ia_out[0,:] = investments; ia_out[1,:] = economic impact (M€)
     except Exception as e:
         print(f"IA optimization failed: {e}")
+        sys.exit(1)
+
+    # -------- Validate per-side sums (hard equality for IA; soft for SIA but we still check) --------
+    try:
+        _validate_portfolio_sum(ia_out[0, :], ia_budget, "IA")
+        _validate_portfolio_sum(sia_out[0, :], sia_budget, "SIA")
+    except Exception as e:
+        print(f"Budget sum error:\n{e}")
+        sys.exit(1)
+
+    # -------- Validate combined per-project min/max --------
+    try:
+        x_combined = np.asarray(ia_out[0, :], dtype=float) + np.asarray(sia_out[0, :], dtype=float)
+        _validate_combined_minmax(x_combined, ia_input)
+        # Optional: also check combined total equals total_budget
+        _validate_portfolio_sum(x_combined, sia_budget + ia_budget, "Combined")
+    except Exception as e:
+        print(f"Combined-portfolio limit error:\n{e}")
         sys.exit(1)
 
     # -------- Display --------
@@ -199,7 +216,12 @@ def main() -> None:
     print("===============================================================\n")
 
     try:
-        show_table_for_results(economic_result=ia_out, social_result=sia_out)
+        show_table_for_results(
+            economic_result=ia_out,
+            social_result=sia_out,
+            si_input=si_input,
+            ia_input=ia_input,
+        )
     except Exception as e:
         print(f"Display failed: {e}")
         sys.exit(1)
